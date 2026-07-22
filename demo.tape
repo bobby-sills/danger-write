@@ -12,9 +12,13 @@ Set TypingSpeed 75ms
 # Set Theme "Gruvbox Dark"   # uncomment if your VHS has this theme
 
 # Launch with a 3s idle limit so the fade + erasure is quick to show.
+# Hidden so the GIF opens straight into the app, not the shell command.
+Hide
 Type "./target/release/danger-write -i 3"
 Enter
-Sleep 1.5s
+Sleep 1s
+Show
+Sleep 500ms
 
 # Write for a bit...
 Type "Lorem ipsum dolor sit amet, consectetur adipiscing elit."
