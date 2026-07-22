@@ -17,6 +17,7 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph},
     Frame,
 };
+use tachyonfx::{fx, Effect, EffectRenderer};
 
 /// What you have to do to survive the session.
 #[derive(Clone, Copy)]
@@ -32,7 +33,9 @@ enum Phase {
     Writing,
     /// You reached the goal. Text is frozen and safe.
     Won,
-    /// You paused too long. Your words were erased. Game over.
+    /// You paused too long. The dissolve animation is destroying your text.
+    Dying,
+    /// The text is gone. Game over screen is up.
     Dead,
 }
 
@@ -53,6 +56,11 @@ struct App {
     lost_words: usize,
     /// Set once the text has been copied to the clipboard, to confirm on screen.
     copied: bool,
+    /// The dissolve effect that destroys the text on game over. Present only
+    /// during the Dying phase.
+    death_fx: Option<Effect>,
+    /// Timestamp of the previous frame, for computing the effect's time delta.
+    last_frame: Instant,
 }
 
 impl App {
@@ -62,13 +70,15 @@ impl App {
             text: String::new(),
             goal,
             idle_limit,
-            fade_window: idle_limit.mul_f64(0.4).min(Duration::from_secs(2)),
+            fade_window: idle_limit.mul_f64(0.8),
             start: now,
             last_key: now,
             phase: Phase::Writing,
             frozen_elapsed: None,
             lost_words: 0,
             copied: false,
+            death_fx: None,
+            last_frame: now,
         }
     }
 
@@ -82,6 +92,8 @@ impl App {
         self.frozen_elapsed = None;
         self.lost_words = 0;
         self.copied = false;
+        self.death_fx = None;
+        self.last_frame = now;
     }
 
     /// Session time to display: live while writing, frozen once it ends.
@@ -107,6 +119,16 @@ impl App {
 
     /// Advance time-based state. Call every tick.
     fn tick(&mut self) {
+        // Hold on the Dying phase until the dissolve animation finishes, then
+        // wipe the (now invisible) text and show the game-over screen.
+        if self.phase == Phase::Dying {
+            if self.death_fx.as_ref().map_or(true, |e| e.done()) {
+                self.text.clear();
+                self.death_fx = None;
+                self.phase = Phase::Dead;
+            }
+            return;
+        }
         if self.phase != Phase::Writing {
             return;
         }
@@ -116,11 +138,13 @@ impl App {
             return;
         }
         if self.last_key.elapsed() >= self.idle_limit && !self.text.is_empty() {
-            // Game over: freeze the timer, wipe the words, stay on this screen.
+            // Game over: freeze the timer, then dissolve the words away. The text
+            // stays in place so the effect has something to destroy; it's cleared
+            // once the animation completes (see the Dying branch above).
             self.lost_words = self.word_count();
             self.frozen_elapsed = Some(self.start.elapsed());
-            self.text.clear();
-            self.phase = Phase::Dead;
+            self.death_fx = Some(fx::dissolve(900));
+            self.phase = Phase::Dying;
         }
     }
 
@@ -176,7 +200,10 @@ fn main() -> io::Result<()> {
 
 fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Result<()> {
     loop {
-        terminal.draw(|frame| draw(frame, app))?;
+        let now = Instant::now();
+        let frame_dt = now.duration_since(app.last_frame);
+        app.last_frame = now;
+        terminal.draw(|frame| draw(frame, app, frame_dt))?;
 
         // Poll on a short timeout so fades and timers keep animating even
         // when the user isn't pressing anything.
@@ -224,6 +251,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Result<()>
                         KeyCode::Char('r') => app.restart(),
                         _ => {}
                     },
+                    // Ignore input while the death animation plays out.
+                    Phase::Dying => {}
                 }
             }
         }
@@ -232,20 +261,23 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Result<()>
     }
 }
 
-fn draw(frame: &mut Frame, app: &App) {
+fn draw(frame: &mut Frame, app: &mut App, frame_dt: Duration) {
+    let area = frame.area();
     let [header, body] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(1),
     ])
-    .areas(frame.area());
+    .areas(area);
 
     draw_header(frame, app, header);
-    draw_body(frame, app, body);
+    draw_body(frame, app, body, frame_dt);
 
     match app.phase {
-        Phase::Won => draw_end_banner(frame, app, frame.area(), false),
-        Phase::Dead => draw_end_banner(frame, app, frame.area(), true),
-        Phase::Writing => {}
+        Phase::Won => draw_end_banner(frame, app, area, false),
+        Phase::Dead => draw_end_banner(frame, app, area, true),
+        // During Writing/Dying the body is shown on its own (Dying is running
+        // the dissolve, which we don't want the banner to cover).
+        Phase::Writing | Phase::Dying => {}
     }
 }
 
@@ -263,9 +295,9 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(line).alignment(Alignment::Center), area);
 }
 
-fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_body(frame: &mut Frame, app: &mut App, area: Rect, frame_dt: Duration) {
     let block = Block::bordered()
-        .border_style(Style::default().fg(Color::Rgb(60, 60, 60)));
+        .border_style(Style::default().fg(border_color(app)));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -284,6 +316,13 @@ fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(visible).style(Style::default().fg(fg)),
         inner,
     );
+
+    // On game over, dissolve the rendered text away before the banner appears.
+    if app.phase == Phase::Dying {
+        if let Some(effect) = app.death_fx.as_mut() {
+            frame.render_effect(effect, inner, frame_dt.into());
+        }
+    }
 }
 
 fn draw_end_banner(frame: &mut Frame, app: &App, area: Rect, dead: bool) {
@@ -373,18 +412,40 @@ fn pipe_to_command(cmd: &str, args: &[&str], text: &str) -> io::Result<()> {
 /// Interpolate the writing color from bright to background as danger rises.
 fn fade_color(app: &App) -> Color {
     if app.phase == Phase::Won {
-        return Color::Rgb(220, 220, 220);
+        return Color::Reset;
     }
     let idle = app.last_key.elapsed();
     let fade_start = app.idle_limit.saturating_sub(app.fade_window);
     if idle <= fade_start {
-        return Color::Rgb(220, 220, 220);
+        // Use the terminal's own foreground color while the text is safe, so it
+        // matches the user's theme instead of a hardcoded white.
+        return Color::Reset;
     }
     // t: 0 at fade start, 1 at erasure. Stop at a dim gray, not black, so the
     // text stays readable right up until it's wiped.
     let t = ((idle - fade_start).as_secs_f64() / app.fade_window.as_secs_f64())
         .clamp(0.0, 1.0);
     lerp_rgb((220, 220, 220), (90, 90, 90), t)
+}
+
+fn border_color(app: &App) -> Color {
+    let base = (60, 60, 60);
+    if matches!(app.phase, Phase::Dying | Phase::Dead) {
+        return Color::Rgb(200, 40, 40);
+    }
+    if app.phase != Phase::Writing {
+        return Color::Rgb(base.0, base.1, base.2);
+    }
+    let idle = app.last_key.elapsed();
+    let fade_start = app.idle_limit.saturating_sub(app.fade_window);
+    if idle <= fade_start {
+        return Color::Rgb(base.0, base.1, base.2);
+    }
+    // Push the border toward red over the same window the text fades, so the
+    // whole frame reddens as erasure approaches.
+    let t = ((idle - fade_start).as_secs_f64() / app.fade_window.as_secs_f64())
+        .clamp(0.0, 1.0);
+    lerp_rgb(base, (200, 40, 40), t)
 }
 
 fn lerp_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f64) -> Color {
