@@ -4,13 +4,19 @@ A writing app that forces you to keep writing. If you stop typing for too long,
 the words you've written fade out and are erased. Reach your goal (a time limit
 or a word count) to survive and copy your text.
 
-## Build
+## Install
 
 ```bash
-cargo build --release
+cargo install danger-write
 ```
 
-The binary is at `target/release/danger-write`.
+Or build from source:
+
+```bash
+git clone https://github.com/bobby-sills/danger-write
+cd danger-write
+cargo build --release   # binary at target/release/danger-write
+```
 
 ## Usage
 
