@@ -8,20 +8,22 @@ Set FontSize 18
 Set Width 1100
 Set Height 640
 Set Padding 16
-Set TypingSpeed 85ms
+Set TypingSpeed 75ms
 # Set Theme "Gruvbox Dark"   # uncomment if your VHS has this theme
 
-# Launch with a 4s idle limit so the fade/erasure is easy to see on camera.
-Type "./target/release/danger-write -i 4"
+# Launch with a 3s idle limit so the fade + erasure is quick to show.
+Type "./target/release/danger-write -i 3"
 Enter
 Sleep 1.5s
 
-Type "The cursor is a loaded gun. Do not stop typing,"
-Sleep 400ms
-Type " or you will lose everything you have written"
-Sleep 4s          # stop typing — watch the words fade out and vanish
-Sleep 1s
+# Write for a bit...
+Type "Lorem ipsum dolor sit amet, consectetur adipiscing elit."
+Sleep 3.5s        # stop typing — the words fade out, then game over
 
-Type "gone. so keep the words alive."
-Sleep 2.5s
+# Game-over screen is showing; restart and keep going.
+Sleep 1s
+Type "r"
+Sleep 800ms
+Type "Sed do eiusmod tempor incididunt ut labore."
+Sleep 1.5s
 Ctrl+C
