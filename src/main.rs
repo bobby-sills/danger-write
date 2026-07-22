@@ -14,7 +14,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Clear, Paragraph, Wrap},
+    widgets::{Block, Clear, Paragraph},
     Frame,
 };
 
@@ -273,12 +273,17 @@ fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
     let fg = fade_color(app);
     let display = format!("{}█", app.text);
 
-    let scroll = scroll_to_bottom(&display, inner.width, inner.height);
-    let paragraph = Paragraph::new(display)
-        .style(Style::default().fg(fg))
-        .wrap(Wrap { trim: false })
-        .scroll((scroll, 0));
-    frame.render_widget(paragraph, inner);
+    // Wrap the text ourselves so we know the exact number of visual rows, then
+    // render only the last screenful. This keeps the cursor (and the newest
+    // words) visible no matter how long the text grows.
+    let wrapped = wrap_lines(&display, inner.width as usize);
+    let start = wrapped.len().saturating_sub(inner.height as usize);
+    let visible: Vec<Line> = wrapped[start..].iter().cloned().map(Line::from).collect();
+
+    frame.render_widget(
+        Paragraph::new(visible).style(Style::default().fg(fg)),
+        inner,
+    );
 }
 
 fn draw_end_banner(frame: &mut Frame, app: &App, area: Rect, dead: bool) {
@@ -392,18 +397,48 @@ fn fmt_dur(d: Duration) -> String {
     format!("{:02}:{:02}", s / 60, s % 60)
 }
 
-/// Estimate how many rows to scroll so the tail of the text stays visible.
-fn scroll_to_bottom(text: &str, width: u16, height: u16) -> u16 {
+/// Word-wrap `text` to `width` columns, hard-breaking any word longer than the
+/// line. Returns one String per visual row, and always at least one row per
+/// logical line, so callers can rely on the count for scrolling.
+fn wrap_lines(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
-        return 0;
+        return vec![String::new()];
     }
-    let width = width as usize;
-    let mut rows = 0usize;
+    let mut out = Vec::new();
     for logical in text.split('\n') {
-        let len = logical.chars().count();
-        rows += (len / width) + 1;
+        let mut cur = String::new();
+        for word in logical.split(' ') {
+            if word.chars().count() > width {
+                // A single word longer than the line: flush, then hard-break it.
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+                for ch in word.chars() {
+                    if cur.chars().count() == width {
+                        out.push(std::mem::take(&mut cur));
+                    }
+                    cur.push(ch);
+                }
+                continue;
+            }
+            let need = if cur.is_empty() {
+                word.chars().count()
+            } else {
+                cur.chars().count() + 1 + word.chars().count()
+            };
+            if need > width {
+                out.push(std::mem::take(&mut cur));
+                cur = word.to_string();
+            } else {
+                if !cur.is_empty() {
+                    cur.push(' ');
+                }
+                cur.push_str(word);
+            }
+        }
+        out.push(cur);
     }
-    (rows as u16).saturating_sub(height)
+    out
 }
 
 // --- CLI -------------------------------------------------------------------
