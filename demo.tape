@@ -25,6 +25,7 @@ Type "Lorem ipsum dolor sit amet, consectetur adipiscing elit."
 Sleep 600ms
 Type " Sed do eiusmod tempor incididunt ut labore."
 
-# ...then stop. The words fade out and are erased — game over.
-Sleep 4s
-Sleep 2s
+# ...then stop. The words fade, then dissolve away — game over.
+Sleep 3s   # idle runs out: the text fades to gray
+Sleep 2s   # the dissolve destroys it
+Sleep 2s   # hold on the game-over screen
