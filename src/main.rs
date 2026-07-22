@@ -17,7 +17,7 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph},
     Frame,
 };
-use tachyonfx::{fx, Effect, EffectRenderer};
+use tachyonfx::{fx, Effect, EffectRenderer, Interpolation};
 
 /// What you have to do to survive the session.
 #[derive(Clone, Copy)]
@@ -143,7 +143,8 @@ impl App {
             // once the animation completes (see the Dying branch above).
             self.lost_words = self.word_count();
             self.frozen_elapsed = Some(self.start.elapsed());
-            self.death_fx = Some(fx::dissolve(900));
+            // A slow dissolve so the destruction has some weight to it.
+            self.death_fx = Some(fx::dissolve((1400, Interpolation::QuadIn)));
             self.phase = Phase::Dying;
         }
     }
