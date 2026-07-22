@@ -22,12 +22,9 @@ Sleep 500ms
 
 # Write for a bit...
 Type "Lorem ipsum dolor sit amet, consectetur adipiscing elit."
-Sleep 3.5s        # stop typing — the words fade out, then game over
+Sleep 600ms
+Type " Sed do eiusmod tempor incididunt ut labore."
 
-# Game-over screen is showing; restart and keep going.
-Sleep 1s
-Type "r"
-Sleep 800ms
-Type "Sed do eiusmod tempor incididunt ut labore."
-Sleep 1.5s
-Ctrl+C
+# ...then stop. The words fade out and are erased — game over.
+Sleep 4s
+Sleep 2s
