@@ -4,7 +4,7 @@ A writing app that forces you to keep writing. If you stop typing for too long,
 the words you've written fade out and are erased. Reach your goal (a time limit
 or a word count) to survive and copy your text.
 
-![demo](demo.gif)
+![demo](https://raw.githubusercontent.com/bobby-sills/danger-write/master/demo.gif)
 
 ## Install
 
