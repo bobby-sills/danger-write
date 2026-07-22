@@ -1,8 +1,8 @@
 # danger-write
 
-A terminal version of the Most Dangerous Writing App. Keep typing — if you
-stop for too long, the words you've written fade out and are erased. Reach your
-goal to survive and copy your text.
+A writing app that forces you to keep writing. If you stop typing for too long,
+the words you've written fade out and are erased. Reach your goal (a time limit
+or a word count) to survive and copy your text.
 
 ## Build
 

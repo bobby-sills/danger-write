@@ -1,8 +1,8 @@
-// danger-write — a terminal "Most Dangerous Writing App".
+// danger-write — a writing app that erases your words if you stop typing.
 //
 // Keep typing. If you stop for too long, the words you've written fade out
 // and are erased. Reach your goal (a time limit or a word count) to survive
-// and unlock the ability to save what you wrote.
+// and unlock the ability to copy what you wrote.
 
 use std::borrow::Cow;
 use std::io::{self, Write};
@@ -441,7 +441,7 @@ fn parse_args() -> Result<(Goal, Duration), String> {
 }
 
 const HELP: &str = "\
-danger-write — a terminal Most Dangerous Writing App
+danger-write: a writing app that erases your words if you stop typing
 
 USAGE:
     danger-write [options]
