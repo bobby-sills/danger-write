@@ -1,6 +1,6 @@
 [package]
 name = "danger-write"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 description = "A writing app that erases everything you've written if you stop typing"
 license = "MIT"
@@ -11,4 +11,3 @@ categories = ["command-line-utilities"]
 
 [dependencies]
 ratatui = "0.30.2"
-tachyonfx = "0.25.1"

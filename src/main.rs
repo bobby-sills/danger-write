@@ -10,6 +10,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use ratatui::{
+    buffer::Buffer,
     crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -17,7 +18,6 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph},
     Frame,
 };
-use tachyonfx::{fx, Effect, EffectRenderer, Interpolation};
 
 /// What you have to do to survive the session.
 #[derive(Clone, Copy)]
@@ -39,6 +39,65 @@ enum Phase {
     Dead,
 }
 
+/// A self-contained dissolve animation: over `duration`, every cell in the
+/// target area is blanked, each at its own deterministic point in the timeline
+/// so the text scatters away rather than vanishing all at once.
+struct Dissolve {
+    duration: Duration,
+    elapsed: Duration,
+}
+
+impl Dissolve {
+    fn new(duration: Duration) -> Self {
+        Self {
+            duration,
+            elapsed: Duration::ZERO,
+        }
+    }
+
+    /// Advance the animation by one frame's worth of time.
+    fn tick(&mut self, dt: Duration) {
+        self.elapsed = (self.elapsed + dt).min(self.duration);
+    }
+
+    fn done(&self) -> bool {
+        self.elapsed >= self.duration
+    }
+
+    /// How far along we are, eased with a quad-in curve so the dissolve starts
+    /// slow and accelerates.
+    fn progress(&self) -> f64 {
+        let t = self.elapsed.as_secs_f64() / self.duration.as_secs_f64();
+        (t * t).clamp(0.0, 1.0)
+    }
+
+    /// Blank every cell in `area` whose per-cell threshold has been passed.
+    fn render(&self, buf: &mut Buffer, area: Rect) {
+        let p = self.progress();
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                if cell_noise(x, y) < p {
+                    if let Some(cell) = buf.cell_mut((x, y)) {
+                        cell.reset();
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A stable pseudo-random value in `[0, 1)` for a cell position. Deterministic,
+/// so each cell dissolves at the same moment on every frame.
+fn cell_noise(x: u16, y: u16) -> f64 {
+    let mut h = (x as u32)
+        .wrapping_mul(0x9E37_79B1)
+        ^ (y as u32).wrapping_mul(0x85EB_CA77);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2545_F491);
+    h ^= h >> 13;
+    h as f64 / (u32::MAX as f64 + 1.0)
+}
+
 struct App {
     text: String,
     goal: Goal,
@@ -58,7 +117,7 @@ struct App {
     copied: bool,
     /// The dissolve effect that destroys the text on game over. Present only
     /// during the Dying phase.
-    death_fx: Option<Effect>,
+    death_fx: Option<Dissolve>,
     /// Timestamp of the previous frame, for computing the effect's time delta.
     last_frame: Instant,
 }
@@ -144,7 +203,7 @@ impl App {
             self.lost_words = self.word_count();
             self.frozen_elapsed = Some(self.start.elapsed());
             // A slow dissolve so the destruction has some weight to it.
-            self.death_fx = Some(fx::dissolve((1400, Interpolation::QuadIn)));
+            self.death_fx = Some(Dissolve::new(Duration::from_millis(1400)));
             self.phase = Phase::Dying;
         }
     }
@@ -321,7 +380,8 @@ fn draw_body(frame: &mut Frame, app: &mut App, area: Rect, frame_dt: Duration) {
     // On game over, dissolve the rendered text away before the banner appears.
     if app.phase == Phase::Dying {
         if let Some(effect) = app.death_fx.as_mut() {
-            frame.render_effect(effect, inner, frame_dt.into());
+            effect.tick(frame_dt);
+            effect.render(frame.buffer_mut(), inner);
         }
     }
 }
