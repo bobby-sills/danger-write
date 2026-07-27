@@ -36,7 +36,7 @@ animating while the user isn't pressing keys.
 **State machine.** Everything hangs off the `Phase` enum on `App`:
 - `Writing` → keys append to `app.text`; each keystroke calls `touch()` to reset the idle clock.
 - `Won` → goal reached, text frozen; `c` copies, `q` quits.
-- `Dying` → idle limit exceeded; the `tachyonfx` dissolve effect is destroying the on-screen text. Input is ignored here.
+- `Dying` → idle limit exceeded; the built-in `Dissolve` effect is destroying the on-screen text. Input is ignored here.
 - `Dead` → text wiped, game-over banner shown; `r` restarts, `q` quits.
 
 Transitions happen only in `tick()` (goal check, idle-timeout → `Dying`, and
@@ -44,7 +44,7 @@ Transitions happen only in `tick()` (goal check, idle-timeout → `Dying`, and
 decides which keys are live in each phase. `Ctrl+C` always quits, regardless of phase.
 
 **Key details worth knowing before editing:**
-- The dissolve animation (`fx::dissolve`) needs the text to still be on screen while it plays, so `tick()` sets `phase = Dying` but does **not** clear `app.text` — the text is cleared only when entering `Dead`. `draw_body` renders the effect over `inner` during `Dying`.
+- The dissolve animation is the hand-rolled `Dissolve` struct (no external effects crate): it blanks each cell in the body area at a deterministic per-cell point in its timeline (`cell_noise` + quad-in `progress`), scattering the text away. It needs the text to still be on screen while it plays, so `tick()` sets `phase = Dying` but does **not** clear `app.text` — the text is cleared only when entering `Dead`. `draw_body` advances (`tick`) and applies (`render`) the effect over `inner` during `Dying`.
 - Fading is manual color interpolation, not an fx: `fade_color()` and `border_color()` lerp RGB from normal toward gray/red over `fade_window` (the last 80% of `idle_limit`). Safe text uses `Color::Reset` so it matches the user's terminal theme rather than a hardcoded white.
 - Scrolling is hand-rolled: `wrap_lines()` wraps text to the body width so the code knows the exact visual row count, then `draw_body` renders only the last screenful (keeps the cursor `█` visible). Don't replace this with ratatui's built-in wrap without also fixing the scroll-to-bottom behavior.
 - Clipboard copy (`copy()` / `pipe_to_command()`) deliberately shells out to whatever CLI tool exists (`wl-copy`/`xclip`/`xsel`/`pbcopy`/`clip`) instead of using a clipboard crate — native crates drop the Linux selection when the process exits. It does not `wait()` on the child because those tools daemonize to keep serving the selection. `clip`/`clip.exe` get CRLF-normalized payloads.
