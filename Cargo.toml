@@ -8,6 +8,36 @@ repository = "https://github.com/bobby-sills/danger-write"
 readme = "README.md"
 keywords = ["tui", "writing", "ratatui", "terminal"]
 categories = ["command-line-utilities"]
+# Web-build artifacts don't belong in the crate published to crates.io. (`dist/`
+# is already gitignored and thus excluded; listed here for good measure.)
+exclude = ["/index.html", "/dist"]
 
-[dependencies]
+# Native (terminal) build: ratatui with its default crossterm backend. Someone
+# who `cargo install`s the terminal app pulls in nothing web-specific.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 ratatui = "0.30.2"
+
+# Web (WebAssembly) build: ratzilla drives ratatui in the browser, so we drop
+# ratatui's default crossterm backend. web-sys gives us the browser clipboard,
+# and web-time a wasm-safe Instant (std::time::Instant panics in the browser).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ratatui = { version = "0.30.2", default-features = false }
+ratzilla = "0.3.1"
+web-sys = { version = "0.3", features = [
+  "Window",
+  "Document",
+  "EventTarget",
+  "KeyboardEvent",
+  "Navigator",
+  "Clipboard",
+  "FontFaceSet",
+] }
+web-time = "1"
+# Await the webfont before building the terminal, so ratzilla measures the cell
+# size against the real font (see the note in main.rs's web `main`).
+wasm-bindgen-futures = "0.4"
+# ratatui-core pulls in critical-section; dropping ratatui's default features
+# leaves its implementation unselected, so we pick the std one here (wasm is
+# single-threaded, so this is a no-op lock). Without it the wasm has dangling
+# `env` imports and the browser refuses to instantiate the module.
+critical-section = { version = "1", features = ["std"] }

@@ -4,20 +4,43 @@
 // and are erased. Reach your goal (a time limit or a word count) to survive
 // and unlock the ability to copy what you wrote.
 
-use std::borrow::Cow;
-use std::io::{self, Write};
-use std::process::{Command, Stdio};
+use std::io;
+
+// A monotonic clock. Native uses std; the web build uses web-time
+// (performance.now()) because std::time::Instant panics in the browser.
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
+#[cfg(target_arch = "wasm32")]
+use web_time::{Duration, Instant};
+
+// Native-only: shelling out to a clipboard CLI.
+#[cfg(not(target_arch = "wasm32"))]
+use std::borrow::Cow;
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::Write;
+#[cfg(not(target_arch = "wasm32"))]
+use std::process::{Command, Stdio};
+
+// Web-only: shared, callback-driven state for ratzilla's render/event loop.
+#[cfg(target_arch = "wasm32")]
+use std::{cell::RefCell, rc::Rc};
 
 use ratatui::{
+    Frame,
     buffer::Buffer,
-    crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Clear, Paragraph},
-    Frame,
 };
+
+// Native uses crossterm for the terminal event loop.
+#[cfg(not(target_arch = "wasm32"))]
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+
+// On the web, ratzilla supplies the backend, the render loop, and key events.
+#[cfg(target_arch = "wasm32")]
+use ratzilla::{DomBackend, WebRenderer};
 
 /// What you have to do to survive the session.
 #[derive(Clone, Copy)]
@@ -25,11 +48,17 @@ enum Goal {
     /// Keep writing until this much time has elapsed.
     Time(Duration),
     /// Keep writing until you've written this many words.
+    // Only reachable through CLI args, which the web build has no way to pass.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     Words(usize),
 }
 
 #[derive(PartialEq)]
 enum Phase {
+    /// Web only: the start menu for choosing a goal before the first session.
+    /// Native gets its goal from CLI args, so it never enters this phase.
+    #[cfg(target_arch = "wasm32")]
+    Menu,
     Writing,
     /// You reached the goal. Text is frozen and safe.
     Won,
@@ -89,9 +118,7 @@ impl Dissolve {
 /// A stable pseudo-random value in `[0, 1)` for a cell position. Deterministic,
 /// so each cell dissolves at the same moment on every frame.
 fn cell_noise(x: u16, y: u16) -> f64 {
-    let mut h = (x as u32)
-        .wrapping_mul(0x9E37_79B1)
-        ^ (y as u32).wrapping_mul(0x85EB_CA77);
+    let mut h = (x as u32).wrapping_mul(0x9E37_79B1) ^ (y as u32).wrapping_mul(0x85EB_CA77);
     h ^= h >> 15;
     h = h.wrapping_mul(0x2545_F491);
     h ^= h >> 13;
@@ -120,6 +147,9 @@ struct App {
     death_fx: Option<Dissolve>,
     /// Timestamp of the previous frame, for computing the effect's time delta.
     last_frame: Instant,
+    /// Web only: which entry in the start menu is highlighted.
+    #[cfg(target_arch = "wasm32")]
+    menu_index: usize,
 }
 
 impl App {
@@ -138,6 +168,8 @@ impl App {
             copied: false,
             death_fx: None,
             last_frame: now,
+            #[cfg(target_arch = "wasm32")]
+            menu_index: 0,
         }
     }
 
@@ -216,6 +248,7 @@ impl App {
     /// Each of these owns the selection persistently after we're gone. We try
     /// them in order and the first one installed wins, so the same binary works
     /// on Wayland, X11, macOS, and Windows.
+    #[cfg(not(target_arch = "wasm32"))]
     fn copy(&mut self) -> io::Result<()> {
         let mut candidates: Vec<(&str, &[&str])> = Vec::new();
         if std::env::var_os("WAYLAND_DISPLAY").is_some() {
@@ -240,8 +273,95 @@ impl App {
             "no clipboard tool available",
         ))
     }
+
+    /// Copy the surviving text to the browser clipboard via the async Clipboard
+    /// API. Fire-and-forget: we don't await the returned promise (the keydown
+    /// that triggered this counts as the user gesture the API requires).
+    #[cfg(target_arch = "wasm32")]
+    fn copy(&mut self) -> io::Result<()> {
+        if let Some(win) = web_sys::window() {
+            let _ = win.navigator().clipboard().write_text(&self.text);
+            self.copied = true;
+        }
+        Ok(())
+    }
+
+    /// Move the start-menu highlight, wrapping around the preset list.
+    #[cfg(target_arch = "wasm32")]
+    fn menu_move(&mut self, delta: isize) {
+        let n = MENU_PRESETS.len() as isize;
+        self.menu_index = (self.menu_index as isize + delta).rem_euclid(n) as usize;
+    }
+
+    /// Leave the start menu and begin a fresh session with the chosen goal.
+    #[cfg(target_arch = "wasm32")]
+    fn start_session(&mut self, goal: Goal) {
+        self.goal = goal;
+        self.restart(); // resets the clock, text, and phase (→ Writing).
+    }
+
+    /// Handle a key event delivered by ratzilla in the browser. Mirrors the
+    /// native key handling in `run()`, minus quitting (you can't close a tab).
+    #[cfg(target_arch = "wasm32")]
+    fn handle_web_key(&mut self, key: ratzilla::event::KeyEvent) {
+        use ratzilla::event::KeyCode;
+        // Let browser shortcuts (copy/paste/reload) pass through untouched.
+        if key.ctrl || key.alt {
+            return;
+        }
+        match self.phase {
+            Phase::Menu => match key.code {
+                KeyCode::Up => self.menu_move(-1),
+                KeyCode::Down => self.menu_move(1),
+                KeyCode::Char('k') => self.menu_move(-1),
+                KeyCode::Char('j') => self.menu_move(1),
+                KeyCode::Enter => {
+                    let goal = MENU_PRESETS[self.menu_index].1;
+                    self.start_session(goal);
+                }
+                _ => {}
+            },
+            Phase::Writing => match key.code {
+                KeyCode::Char(c) => {
+                    self.touch();
+                    self.text.push(c);
+                }
+                KeyCode::Enter => {
+                    self.touch();
+                    self.text.push('\n');
+                }
+                KeyCode::Tab => {
+                    self.touch();
+                    self.text.push_str("    ");
+                }
+                KeyCode::Backspace => {
+                    self.touch();
+                    self.text.pop();
+                }
+                _ => {}
+            },
+            Phase::Won => match key.code {
+                KeyCode::Char('c') => {
+                    let _ = self.copy();
+                }
+                // Back to the goal picker (web has no "quit").
+                KeyCode::Char('r') => self.phase = Phase::Menu,
+                _ => {}
+            },
+            Phase::Dead => {
+                // Restart returns to the goal picker rather than replaying the
+                // same goal, since that's where web sessions are configured.
+                if key.code == KeyCode::Char('r') {
+                    self.phase = Phase::Menu;
+                }
+            }
+            // Ignore input while the death animation plays out.
+            Phase::Dying => {}
+        }
+    }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> io::Result<()> {
     let (goal, idle_limit) = match parse_args() {
         Ok(v) => v,
@@ -258,6 +378,94 @@ fn main() -> io::Result<()> {
     result
 }
 
+/// Web entry point. We wait for the Fira Code webfont to load *before* building
+/// the terminal, then start. This matters because ratzilla measures its cell
+/// size from the font when the backend is created and only re-measures on a
+/// window `resize` — and its resize path rebuilds the grid element, dropping the
+/// `tabindex` and key listener (breaking focus and input). Measuring against the
+/// real font up front means we never need that resize, so the grid stays intact.
+#[cfg(target_arch = "wasm32")]
+fn main() -> io::Result<()> {
+    wasm_bindgen_futures::spawn_local(async {
+        wait_for_font().await;
+        // Errors here would only be DOM setup failures; nothing useful to do but
+        // stop, and the blank page makes it obvious.
+        let _ = start_web();
+    });
+    Ok(())
+}
+
+/// Resolve once the Fira Code webfont is loaded (or has failed to). Calling
+/// `load` both kicks off the fetch and yields a promise for its completion.
+#[cfg(target_arch = "wasm32")]
+async fn wait_for_font() {
+    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+        let promise = doc.fonts().load("16px \"Fira Code\"");
+        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    }
+}
+
+/// Build the ratzilla backend and hand the render loop to it. `draw_web` re-runs
+/// each animation frame (replacing native's 50ms poll).
+///
+/// Keyboard input is our own `keydown` listener on `window`, *not* ratzilla's
+/// `on_key_event`. Ratzilla listens on the grid element, which only receives
+/// keys while it's focused and which ratzilla throws away and rebuilds on a
+/// window resize (dropping the listener). A window listener needs no focus and
+/// survives those rebuilds, so typing just works — no click-to-focus required.
+#[cfg(target_arch = "wasm32")]
+fn start_web() -> io::Result<()> {
+    use web_sys::wasm_bindgen::{JsCast, closure::Closure};
+
+    // Start in the menu so the player picks a goal; the goal passed here is just
+    // a placeholder that `start_session` replaces on selection.
+    let mut app = App::new(Goal::Time(Duration::from_secs(300)), Duration::from_secs(3));
+    app.phase = Phase::Menu;
+    let app = Rc::new(RefCell::new(app));
+
+    let backend = DomBackend::new()?;
+    let terminal = ratatui::Terminal::new(backend)?;
+
+    if let Some(window) = web_sys::window() {
+        let app = app.clone();
+        let on_key =
+            Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |ev: web_sys::KeyboardEvent| {
+                // Leave browser shortcuts (copy/paste/reload/devtools) alone.
+                if ev.ctrl_key() || ev.alt_key() || ev.meta_key() {
+                    return;
+                }
+                // Swallow keys we act on so they don't scroll the page, move
+                // focus, or trigger Firefox's quick-find on "/".
+                let key = ev.key();
+                let handled = key.chars().count() == 1
+                    || matches!(
+                        key.as_str(),
+                        "Enter" | "Tab" | "Backspace" | "ArrowUp" | "ArrowDown"
+                    );
+                if handled {
+                    ev.prevent_default();
+                }
+                app.borrow_mut().handle_web_key(ev.into());
+            });
+        window
+            .add_event_listener_with_callback("keydown", on_key.as_ref().unchecked_ref())
+            .ok();
+        on_key.forget(); // keep the listener alive for the page's lifetime
+    }
+
+    terminal.draw_web(move |frame| {
+        let mut app = app.borrow_mut();
+        let now = Instant::now();
+        let frame_dt = now.duration_since(app.last_frame);
+        app.last_frame = now;
+        draw(frame, &mut app, frame_dt);
+        app.tick();
+    });
+
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Result<()> {
     loop {
         let now = Instant::now();
@@ -273,9 +481,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Result<()>
                     continue;
                 }
                 // Ctrl+C always quits.
-                if key.modifiers.contains(KeyModifiers::CONTROL)
-                    && key.code == KeyCode::Char('c')
-                {
+                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
                     return Ok(());
                 }
 
@@ -322,12 +528,15 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Result<()>
 }
 
 fn draw(frame: &mut Frame, app: &mut App, frame_dt: Duration) {
+    // Web only: the start menu replaces the whole screen until a goal is chosen.
+    #[cfg(target_arch = "wasm32")]
+    if app.phase == Phase::Menu {
+        draw_menu(frame, app);
+        return;
+    }
+
     let area = frame.area();
-    let [header, body] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(1),
-    ])
-    .areas(area);
+    let [header, body] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
 
     draw_header(frame, app, header);
     draw_body(frame, app, body, frame_dt);
@@ -338,6 +547,9 @@ fn draw(frame: &mut Frame, app: &mut App, frame_dt: Duration) {
         // During Writing/Dying the body is shown on its own (Dying is running
         // the dissolve, which we don't want the banner to cover).
         Phase::Writing | Phase::Dying => {}
+        // Handled by the early return above; here only for match exhaustiveness.
+        #[cfg(target_arch = "wasm32")]
+        Phase::Menu => {}
     }
 }
 
@@ -351,13 +563,12 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         Goal::Words(n) => format!("{words} / {n} words"),
     };
 
-    let line = Line::from(Span::styled(text, Style::default().fg(Color::DarkGray)));
+    let line = Line::from(Span::styled(text, Style::default().fg(theme::MUTED)));
     frame.render_widget(Paragraph::new(line).alignment(Alignment::Center), area);
 }
 
 fn draw_body(frame: &mut Frame, app: &mut App, area: Rect, frame_dt: Duration) {
-    let block = Block::bordered()
-        .border_style(Style::default().fg(border_color(app)));
+    let block = Block::bordered().border_style(Style::default().fg(border_color(app)));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -399,7 +610,7 @@ fn draw_end_banner(frame: &mut Frame, app: &App, area: Rect, dead: bool) {
 
     let (accent, title, detail) = if dead {
         (
-            Color::Red,
+            theme::LOST,
             "YOUR WORDS ARE GONE",
             format!(
                 "{} words lost · lasted {}",
@@ -409,7 +620,7 @@ fn draw_end_banner(frame: &mut Frame, app: &App, area: Rect, dead: bool) {
         )
     } else {
         (
-            Color::Green,
+            theme::WON,
             "YOU SURVIVED",
             format!("{} words written", app.word_count()),
         )
@@ -421,20 +632,31 @@ fn draw_end_banner(frame: &mut Frame, app: &App, area: Rect, dead: bool) {
             title,
             Style::default().fg(accent).add_modifier(Modifier::BOLD),
         )),
-        Line::from(Span::styled(detail, Style::default().fg(Color::Gray))),
+        Line::from(Span::styled(detail, Style::default().fg(theme::DETAIL))),
     ];
-    // Instructions live here (and only here), with Ctrl+C to quit.
+    // Instructions live here (and only here). Native can quit (Ctrl+C or q) and
+    // its restart replays the same goal. The web build can't close its own tab,
+    // and its restart returns to the goal picker ("menu") instead.
     lines.push(Line::from(""));
+    #[cfg(not(target_arch = "wasm32"))]
     let hint = if dead {
-        "r restart    q quit".to_string()
+        "r restart    q quit"
     } else if app.copied {
-        "copied ✓    q quit".to_string()
+        "copied ✓    q quit"
     } else {
-        "c copy    q quit".to_string()
+        "c copy    q quit"
+    };
+    #[cfg(target_arch = "wasm32")]
+    let hint = if dead {
+        "r menu"
+    } else if app.copied {
+        "copied ✓    r menu"
+    } else {
+        "c copy    r menu"
     };
     lines.push(Line::from(Span::styled(
         hint,
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(theme::MUTED),
     )));
 
     let block = Block::bordered().border_style(Style::default().fg(accent));
@@ -444,10 +666,82 @@ fn draw_end_banner(frame: &mut Frame, app: &App, area: Rect, dead: bool) {
     frame.render_widget(para, rect);
 }
 
+/// Web start-menu choices. Native picks its goal from CLI args instead, so this
+/// (and the menu) is web-only.
+#[cfg(target_arch = "wasm32")]
+const MENU_PRESETS: &[(&str, Goal)] = &[
+    ("1 minute", Goal::Time(Duration::from_secs(60))),
+    ("3 minutes", Goal::Time(Duration::from_secs(180))),
+    ("5 minutes", Goal::Time(Duration::from_secs(300))),
+    ("10 minutes", Goal::Time(Duration::from_secs(600))),
+    ("100 words", Goal::Words(100)),
+    ("250 words", Goal::Words(250)),
+    ("500 words", Goal::Words(500)),
+];
+
+/// Draw the web start menu: a centered list of goals with one highlighted.
+#[cfg(target_arch = "wasm32")]
+fn draw_menu(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let w = 34.min(area.width);
+    // title + subtitle + blank + presets + blank + footer, plus 2 border rows.
+    let h = (MENU_PRESETS.len() as u16 + 7).min(area.height);
+    let rect = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    frame.render_widget(Clear, rect);
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "danger-write",
+            Style::default().fg(theme::WON).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "pick your goal",
+            Style::default().fg(theme::DETAIL),
+        )),
+        Line::from(""),
+    ];
+    for (i, (label, _)) in MENU_PRESETS.iter().enumerate() {
+        let selected = i == app.menu_index;
+        let style = if selected {
+            Style::default()
+                .fg(theme::SAFE_FG)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme::MUTED)
+        };
+        let marker = if selected { "▸ " } else { "  " };
+        lines.push(Line::from(Span::styled(format!("{marker}{label}"), style)));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "↑/↓ move · enter start",
+        Style::default().fg(theme::MUTED),
+    )));
+
+    let border = Color::Rgb(
+        theme::BORDER_CALM.0,
+        theme::BORDER_CALM.1,
+        theme::BORDER_CALM.2,
+    );
+    let block = Block::bordered().border_style(Style::default().fg(border));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .block(block),
+        rect,
+    );
+}
+
 // --- helpers ---------------------------------------------------------------
 
 /// Spawn `cmd args` and feed `text` to its stdin. Returns Err if the command
 /// isn't installed (or the pipe fails), so the caller can try the next one.
+#[cfg(not(target_arch = "wasm32"))]
 fn pipe_to_command(cmd: &str, args: &[&str], text: &str) -> io::Result<()> {
     let mut child = Command::new(cmd)
         .args(args)
@@ -470,29 +764,64 @@ fn pipe_to_command(cmd: &str, args: &[&str], text: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Interpolate the writing color from bright to background as danger rises.
+// --- theme -----------------------------------------------------------------
+// Palette, split by target. The native (terminal) build stays theme-neutral:
+// it borrows the terminal's own colors via `Color::Reset` and ANSI names, so it
+// looks right in whatever theme the user runs. The web build has no terminal to
+// borrow from, so it ships an explicit gruvbox palette (morhetz/gruvbox); the
+// page background and default foreground are set to match in `index.html`.
+//
+// Flat `Color`s where we render directly; `(u8, u8, u8)` where we interpolate.
+
+#[cfg(not(target_arch = "wasm32"))]
+mod theme {
+    use super::Color;
+    pub const MUTED: Color = Color::DarkGray; // header + end-screen hints
+    pub const SAFE_FG: Color = Color::Reset; // live text, before any fade
+    pub const FADE_FROM: (u8, u8, u8) = (220, 220, 220);
+    pub const FADE_TO: (u8, u8, u8) = (90, 90, 90);
+    pub const BORDER_CALM: (u8, u8, u8) = (60, 60, 60);
+    pub const DANGER: (u8, u8, u8) = (200, 40, 40);
+    pub const WON: Color = Color::Green;
+    pub const LOST: Color = Color::Red;
+    pub const DETAIL: Color = Color::Gray; // end-screen sub-line
+}
+
+#[cfg(target_arch = "wasm32")]
+mod theme {
+    use super::Color;
+    pub const MUTED: Color = Color::Rgb(0x92, 0x83, 0x74); // gray_245
+    pub const SAFE_FG: Color = Color::Rgb(0xeb, 0xdb, 0xb2); // light1
+    pub const FADE_FROM: (u8, u8, u8) = (0xeb, 0xdb, 0xb2); // light1
+    pub const FADE_TO: (u8, u8, u8) = (0x66, 0x5c, 0x54); // dark3
+    pub const BORDER_CALM: (u8, u8, u8) = (0x50, 0x49, 0x45); // dark2
+    pub const DANGER: (u8, u8, u8) = (0xfb, 0x49, 0x34); // bright_red
+    pub const WON: Color = Color::Rgb(0xb8, 0xbb, 0x26); // bright_green
+    pub const LOST: Color = Color::Rgb(0xfb, 0x49, 0x34); // bright_red
+    pub const DETAIL: Color = Color::Rgb(0xa8, 0x99, 0x84); // light4
+}
+
+/// Interpolate the writing color from bright to danger-dim as idle time rises.
 fn fade_color(app: &App) -> Color {
     if app.phase == Phase::Won {
-        return Color::Reset;
+        return theme::SAFE_FG;
     }
     let idle = app.last_key.elapsed();
     let fade_start = app.idle_limit.saturating_sub(app.fade_window);
     if idle <= fade_start {
-        // Use the terminal's own foreground color while the text is safe, so it
-        // matches the user's theme instead of a hardcoded white.
-        return Color::Reset;
+        return theme::SAFE_FG;
     }
-    // t: 0 at fade start, 1 at erasure. Stop at a dim gray, not black, so the
+    // t: 0 at fade start, 1 at erasure. Stop at a dim tone, not black, so the
     // text stays readable right up until it's wiped.
-    let t = ((idle - fade_start).as_secs_f64() / app.fade_window.as_secs_f64())
-        .clamp(0.0, 1.0);
-    lerp_rgb((220, 220, 220), (90, 90, 90), t)
+    let t = ((idle - fade_start).as_secs_f64() / app.fade_window.as_secs_f64()).clamp(0.0, 1.0);
+    lerp_rgb(theme::FADE_FROM, theme::FADE_TO, t)
 }
 
 fn border_color(app: &App) -> Color {
-    let base = (60, 60, 60);
+    let base = theme::BORDER_CALM;
     if matches!(app.phase, Phase::Dying | Phase::Dead) {
-        return Color::Rgb(200, 40, 40);
+        let d = theme::DANGER;
+        return Color::Rgb(d.0, d.1, d.2);
     }
     if app.phase != Phase::Writing {
         return Color::Rgb(base.0, base.1, base.2);
@@ -504,9 +833,8 @@ fn border_color(app: &App) -> Color {
     }
     // Push the border toward red over the same window the text fades, so the
     // whole frame reddens as erasure approaches.
-    let t = ((idle - fade_start).as_secs_f64() / app.fade_window.as_secs_f64())
-        .clamp(0.0, 1.0);
-    lerp_rgb(base, (200, 40, 40), t)
+    let t = ((idle - fade_start).as_secs_f64() / app.fade_window.as_secs_f64()).clamp(0.0, 1.0);
+    lerp_rgb(base, theme::DANGER, t)
 }
 
 fn lerp_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f64) -> Color {
@@ -565,6 +893,7 @@ fn wrap_lines(text: &str, width: usize) -> Vec<String> {
 
 // --- CLI -------------------------------------------------------------------
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_args() -> Result<(Goal, Duration), String> {
     let mut goal: Option<Goal> = None;
     let mut idle = Duration::from_secs(3);
@@ -597,6 +926,7 @@ fn parse_args() -> Result<(Goal, Duration), String> {
     Ok((goal.unwrap_or(Goal::Time(Duration::from_secs(300))), idle))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 const HELP: &str = "\
 danger-write: a writing app that erases your words if you stop typing
 

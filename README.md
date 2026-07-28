@@ -20,6 +20,22 @@ cd danger-write
 cargo build --release   # binary at target/release/danger-write
 ```
 
+### Run in the browser
+
+The same code also compiles to WebAssembly and runs in a browser via
+[ratzilla](https://github.com/orhun/ratzilla) — no terminal required.
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install --locked trunk
+trunk serve            # dev server at http://localhost:8080
+trunk build --release  # static site into dist/ (deploy anywhere)
+```
+
+The web version opens on a menu to pick your goal (time or word count), then
+plays with a 3-second idle limit. `c` copies to the browser clipboard after you
+win, and `r` takes you back to the menu.
+
 ## Usage
 
 ```bash
