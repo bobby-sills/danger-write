@@ -24,10 +24,7 @@ cargo build --release   # binary at target/release/danger-write
 
 ### Run in the browser
 
-The same code also compiles to WebAssembly and runs in a browser via
-[ratzilla](https://github.com/orhun/ratzilla) — no terminal required. A hosted
-build is live at **[bobbysills.dev/danger-write](https://bobbysills.dev/danger-write/)**;
-to run it yourself:
+The same code also compiles to WebAssembly and runs in a browser via [ratzilla](https://github.com/orhun/ratzilla). A hosted build is live at **[bobbysills.dev/danger-write](https://bobbysills.dev/danger-write/)**; to run it yourself:
 
 ```bash
 rustup target add wasm32-unknown-unknown
@@ -50,21 +47,15 @@ danger-write -i 5         # allow 5 seconds idle before erasure (default: 3)
 
 ### Options
 
-| Flag | Description |
-|------|-------------|
-| `-t, --time <MINUTES>` | Survive by writing for this long (default: 5) |
-| `-w, --words <N>` | Survive by reaching this many words |
+| Flag                   | Description                                         |
+| ---------------------- | --------------------------------------------------- |
+| `-t, --time <MINUTES>` | Survive by writing for this long (default: 5)       |
+| `-w, --words <N>`      | Survive by reaching this many words                 |
 | `-i, --idle <SECONDS>` | Idle time before your words are erased (default: 3) |
-| `-h, --help` | Show help |
+| `-h, --help`           | Show help                                           |
 
 ## Keys
 
-- **While writing:** just type. `Ctrl+C` to quit.
-- **After you win:** `c` to copy your text to the clipboard, `q` to quit.
-- **After you fail:** `r` to restart, `q` to quit.
-
-## Clipboard
-
-Copying uses whatever clipboard tool is available: `wl-copy`, `xclip`, or
-`xsel` on Linux, `pbcopy` on macOS, `clip` on Windows. On Linux you may need to
-install one (e.g. `wl-clipboard`); macOS and Windows work out of the box.
+- While writing: type `Ctrl+C` to quit.
+- After you win: `c` to copy your text to the clipboard, `q` to quit.
+- After you fail: `r` to restart, `q` to quit.
