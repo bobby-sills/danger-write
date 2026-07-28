@@ -6,6 +6,8 @@ or a word count) to survive and copy your text.
 
 ![demo](https://raw.githubusercontent.com/bobby-sills/danger-write/master/demo.gif)
 
+**▶ [Play in your browser](https://bobbysills.dev/danger-write/)** — no install required.
+
 ## Install
 
 ```bash
@@ -23,7 +25,9 @@ cargo build --release   # binary at target/release/danger-write
 ### Run in the browser
 
 The same code also compiles to WebAssembly and runs in a browser via
-[ratzilla](https://github.com/orhun/ratzilla) — no terminal required.
+[ratzilla](https://github.com/orhun/ratzilla) — no terminal required. A hosted
+build is live at **[bobbysills.dev/danger-write](https://bobbysills.dev/danger-write/)**;
+to run it yourself:
 
 ```bash
 rustup target add wasm32-unknown-unknown
